@@ -9,9 +9,19 @@ FRIGID = '/Users/jls83/Downloads/Frigid Test.ir'
 TERMPS = '/Users/jls83/Downloads/Termps.ir'
 ALL_SAME = '/Users/jls83/Downloads/AllSame.ir'
 
-def bin_length(n):
-    return math.floor(math.log2(n)) + 1
+FIRST_BURST = 8963
+SECOND_BURST = 4511
+HIGH = 625
+LOW = 525
+SPACE = 575
+WRAPPED_LOW = (SPACE + LOW + SPACE)
+SHORT_SPLIT = 20010
+LONG_SPLIT = 40020
+PREAMBLE = [FIRST_BURST, SECOND_BURST, HIGH, (SPACE + LOW + SPACE)]
 
+CYCLE_LENGTH = 1200
+HIGH_CYCLE = (625, 575)
+LOW_CYCLE = (625, 575)
 
 class IRSpec:
     def __init__(self, name, capture_type, frequency, duty_cycle, data):
@@ -30,6 +40,35 @@ class IRSpec:
         # }
 
         self.data_int = [int(n) for n in data.split(' ')]
+        self.normalized_data = [self.normalize_value(n) for n in self.data_int]
+        self.chunks = self.get_chunks(self.normalized_data)
+
+    @staticmethod
+    def normalize_value(n):
+        if n <= 582: return SPACE
+        elif n <= 656: return HIGH
+        elif n <= 1683: return (SPACE + LOW + SPACE)
+        elif n <= 4516: return SECOND_BURST
+        elif n <= 8994: return FIRST_BURST
+        elif n <= 20016: return SHORT_SPLIT
+        else: return LONG_SPLIT
+
+    @staticmethod
+    def get_chunks(ns, boundaries={SHORT_SPLIT, LONG_SPLIT}):
+        res = [[]]
+        for n in ns:
+            if n in boundaries:
+                res.append([])
+            else:
+                res[-1].append(n)
+
+        return res
+
+    def get_ir_file_def(self, button_name=None):
+        if button_name is None:
+            button_name = self.name
+        data_str = " ".join(str(n) for n in self.normalized_data)
+        return f"name: {button_name}\ntype: raw\nfrequency: 38000\nduty_cycle: 0.330000\ndata: {data_str}\n"
 
 def parse_chunk(chunk) -> IRSpec:
     name, capture_type, frequency, duty_cycle, data = (l.split(': ')[-1] for l in chunk.split('\n'))
@@ -92,31 +131,23 @@ for bucket in buckets:
     for k in bucket:
         bucket_map[k] = v
 
-def construct_times(data_ints, bucket_map):
+def construct_times(data_ints):
     res = [0]
     for n in data_ints:
-        actual_n = bucket_map[n]
-        t_next = res[-1] + actual_n
+        t_next = res[-1] + n
         res.append(t_next)
     return res
 
+
+
 #####
-
-# def plot_times(tss):
-#     _, axs = plt.subplots(len(tss))
-
-#     for i, ts in enumerate(tss):
-#         axs[i].step(ts, [i & 1 for i in range(len(ts))])
-
-#     plt.show()
-
 def plot_specs(specs):
     # figure = plt.figure()
     # figure.subplots_adjust(left=0.3)
     _, axs = plt.subplots(len(specs), sharex=True)
 
     for i, spec in enumerate(specs):
-        ts = construct_times(spec.data_int, bucket_map)
+        ts = construct_times(spec.normalized_data)
         axs[i].set_title(spec.name, x=0.0, y=1.0, pad=-8, fontsize=8, horizontalalignment='left')
         axs[i].step(ts, [i & 1 for i in range(len(ts))])
         axs[i].yaxis.set_ticks([])
@@ -124,18 +155,47 @@ def plot_specs(specs):
 
     plt.show()
 
-# plot_times([construct_times(s.data_int, bucket_map) for s in chain(specs_allsame, specs_frigid, specs_termps)])
-plot_specs(list(chain(specs_allsame, specs_frigid, specs_termps)))
+def plot_chunks(specs, chunk_idx):
+    # figure = plt.figure()
+    # figure.subplots_adjust(left=0.3)
+    _, axs = plt.subplots(len(specs), sharex=True)
 
-# range_defs = [
-#     [550 + (25 * i) for i in range(5)],
-#     [1650 + (25 * i) for i in range(2)],
-#     [4510],
-#     [8960 + (25 * i) for i in range(2)],
-#     [20010],
-#     [40020],
-# ]
+    for i, spec in enumerate(specs):
+        ts = construct_times(spec.chunks[chunk_idx])
+        axs[i].set_title(spec.name, x=0.0, y=1.0, pad=-8, fontsize=8, horizontalalignment='left')
+        axs[i].step(ts, [i & 1 for i in range(len(ts))])
+        axs[i].yaxis.set_ticks([])
 
-# ranges = reduce(lambda a, c: a + c, range_defs)
 
-# x = [110, 115, 120, 125, 130, 330, 335, 900, 1790, 1795, 4000, 8000]
+    plt.show()
+
+# plot_chunks(list(chain(specs_allsame, specs_frigid, specs_termps)), 0)
+
+#####
+
+def dump_specs_to_file(specs, file_name):
+    button_defs = (spec.get_ir_file_def() for spec in specs)
+    file_header = ["Filetype: IR signals file", "Version: 1"]
+    file_text = "\n".join(file_header) + "\n" + "# \n".join(button_defs)
+
+    with open(file_name, "w") as f:
+        f.write(file_text)
+
+dump_specs_to_file(chain(specs_allsame, specs_frigid, specs_termps), "/Users/jls83/NormalizedRemote.ir")
+
+def to_digit_array(chunk):
+    m = {
+        HIGH: 1,
+        LOW: 0,
+        WRAPPED_LOW: 0,
+        SPACE: None
+    }
+
+    return [m[n] for n in chunk if m.get(n) is not None]
+
+def from_little_endian_digit_array(arr):
+    def f(acc, cur):
+        i, n = cur
+        return acc + n << i
+
+    return reduce(f, enumerate(arr), 0)
